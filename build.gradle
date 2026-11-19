@@ -1,0 +1,62 @@
+plugins {
+    id 'java'
+    id 'idea'
+}
+
+group 'ru.apertum.qsystem'
+version "${appVersion}"
+
+sourceCompatibility = JavaVersion.VERSION_1_8
+targetCompatibility = JavaVersion.VERSION_1_8
+
+compileJava.options.encoding = "UTF-8"
+compileTestJava.options.encoding = "UTF-8"
+
+wrapper {
+    gradleVersion = '6.1.1' // Желаемая версия
+}
+
+repositories {
+    mavenCentral()
+}
+
+// Создание "fat JAR" со всеми зависимостями
+jar {
+    exclude 'gnu/io/**'
+    manifest {
+        attributes 'Main-Class': 'ru.apertum.cbrs485.test.TestRS'
+    }
+    
+    // Включаем все зависимости в один JAR
+    from {
+        configurations.compile.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    
+    // Исключаем подписи из зависимостей (чтобы избежать SecurityException)
+    exclude 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/*.DSA'
+}
+
+jar.doLast {
+    println("Copy artefact from \"${buildDir}\\libs\\" + archivesBaseName + '-' + version + ".jar" + "\" to : ${buildDir}\\..\\")
+    ant.copy file: "${buildDir}/libs/" + archivesBaseName + '-' + version + '.jar', todir: "${buildDir}/../"
+
+    File file = new File("adminRS485.bat")
+    file.write("@echo off\n")
+    file.append("java -jar \"%~dp0" + archivesBaseName + '-' + version + ".jar\"\n")
+    file.append("pause\n")
+    file = new File("adminRS485.sh")
+    file.write("#!/bin/sh\n")
+    file.append("\n")
+    file.append("java -jar " + archivesBaseName + '-' + version + ".jar\n")
+
+    file = new File("version.bat")
+    file.write("java -cp " + archivesBaseName + '-' + version + ".jar" + " ru.apertum.cbrs485.core.Version \n")
+    file.append("\n")
+    file.append("pause\n")
+}
+
+dependencies {
+    compile fileTree(dir: 'lib', include: '**/*.jar')
+    compile(group: 'org.jdesktop', name: 'appframework', version: '1.0.3')
+    compile(group: 'org.netbeans.external', name: 'AbsoluteLayout', version: 'RELEASE111')
+}

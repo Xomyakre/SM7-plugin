@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<rs485 bits="8" parity="false" delay="200" name="COM3" speed="9600" stopBits="1">
+    <operators>
+        <!-- point = номер окна оператора в QSystem, protocol 5 = Solt -->
+        <operator addressRS="1" comPort="COM3" point="1" protocol="5"/>
+        <operator addressRS="1" comPort="COM3" point="2" protocol="5"/>
+    </operators>
+    <ports>
+        <!-- модем SB5-MPRT: 9600, без чётности -->
+        <port bits="8" parity="false" name="COM3" speed="9600" stopBits="1"/>
+    </ports>
+    <protocols>
+        <akis brightness="254" default="false">Akis</akis>
+        <docash default="false">DoCash</docash>
+        <ledDisplayRu default="false">led-displays.ru</ledDisplayRu>
+        <qsystem default="false">QSystem</qsystem>
+        <solt keyCode="1" sendDisplay="false" cancel="false" cancelKeyCode="2" default="true">Solt</solt>
+        <ssi default="false">SSI</ssi>
+        <svetovod default="false">Svetovod</svetovod>
+        <svetovodM fontName="Arial" fontSize="12" height="9" lenghtBy8="3" default="false">Svetovod M</svetovodM>
+        <pr9800 align="0" color="1" dispNo="0" displayType="0" font="0" opt="0" speed="0" default="false">PR9800</pr9800>
+    </protocols>
+</rs485>
