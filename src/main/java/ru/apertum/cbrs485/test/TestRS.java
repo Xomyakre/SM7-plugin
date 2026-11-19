@@ -85,7 +85,32 @@ public class TestRS extends javax.swing.JFrame {
             tblAddresses.setModel(new AddrsTableModel(propXml));
             loadProps(propXml);
         }
+
+        // Вкладка SOLT: модем SB5-MPRT + табло SM7. Порт берётся из полей формы слева.
+        final SoltTestPanel soltPanel = new SoltTestPanel(() -> propXml, () -> {
+            final ISerialPort port = new RxtxSerialPort(textFieldPortName.getText());
+            port.setSpeed(Integer.parseInt((String) comboBoxSpeed.getSelectedItem()));
+            port.setDataBits(Integer.parseInt((String) comboBoxBits.getSelectedItem()));
+            port.setParity(checkBoxParity.isSelected() ? 1 : 0);
+            port.setStopBits(Integer.parseInt((String) comboBoxStopBits.getSelectedItem()));
+            return port;
+        });
+        int soltTab = -1;
+        for (int i = 0; i < jTabbedPane1.getTabCount(); i++) {
+            if ("solt".equalsIgnoreCase(jTabbedPane1.getTitleAt(i).trim())) {
+                soltTab = i;
+                break;
+            }
+        }
+        if (soltTab >= 0) {
+            jTabbedPane1.setComponentAt(soltTab, soltPanel);
+        } else {
+            jTabbedPane1.addTab("SOLT", soltPanel);
+        }
+        System.out.println("SOLT test panel: " + (soltTab >= 0 ? "заменена вкладка #" + soltTab : "добавлена новая вкладка"));
     }
+
+
 
     /**
      * This method is called from within the constructor to initialize the form. WARNING: Do NOT modify this code. The content of this method is always

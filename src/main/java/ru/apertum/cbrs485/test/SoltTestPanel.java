@@ -18,11 +18,9 @@ import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingUtilities;
-import ru.apertum.cbrs485.core.Event;
 import ru.apertum.cbrs485.core.RS485Property;
 import ru.apertum.cbrs485.core.RS485Property.Operator;
 import ru.apertum.cbrs485.core.protocols.Solt;
-import ru.apertum.qsystem.common.CustomerState;
 import ru.evgenic.rxtx.serialPort.ISerialPort;
 
 /**
@@ -66,8 +64,8 @@ public class SoltTestPanel extends JPanel {
         final JButton btnFinish = new JButton("Завершить");
         final JButton btnReload = new JButton("Перечитать solt_map.csv");
         btnRefresh.addActionListener(e -> refreshPoints());
-        btnInvite.addActionListener(e -> worker.submit(() -> sendEvent(tfTicket.getText().trim(), CustomerState.STATE_INVITED)));
-        btnFinish.addActionListener(e -> worker.submit(() -> sendEvent(tfTicket.getText().trim(), CustomerState.STATE_FINISH)));
+        btnInvite.addActionListener(e -> submit(() -> sendInvite(tfTicket.getText().trim())));
+        btnFinish.addActionListener(e -> submit(this::sendFinish));
         btnReload.addActionListener(e -> {
             soltProtocol().reloadMap();
             log("Таблица " + Solt.MAP_FILE + " будет перечитана при следующей отправке");
@@ -86,7 +84,7 @@ public class SoltTestPanel extends JPanel {
 
         // 2. Вручную
         final JButton btnSendRaw = new JButton("Отправить");
-        btnSendRaw.addActionListener(e -> worker.submit(this::sendRaw));
+        btnSendRaw.addActionListener(e -> submit(this::sendRaw));
 
         final JPanel pRaw = new JPanel(new FlowLayout(FlowLayout.LEFT));
         pRaw.setBorder(BorderFactory.createTitledBorder("Вручную (без таблицы)"));
@@ -101,9 +99,12 @@ public class SoltTestPanel extends JPanel {
         // 3. Прогон по всей таблице
         final JButton btnRun = new JButton("Прогнать");
         final JButton btnStop = new JButton("Стоп");
+        final JButton btnClosePort = new JButton("Закрыть порт");
+        btnClosePort.setToolTipText("Освободить COM порт (например, для COM-Port tester) или применить новые настройки порта");
+        btnClosePort.addActionListener(e -> submit(this::closePort));
         btnRun.addActionListener(e -> {
             stopRun = false;
-            worker.submit(this::runRange);
+            submit(this::runRange);
         });
         btnStop.addActionListener(e -> stopRun = true);
 
@@ -117,6 +118,7 @@ public class SoltTestPanel extends JPanel {
         pRun.add(spDelay);
         pRun.add(btnRun);
         pRun.add(btnStop);
+        pRun.add(btnClosePort);
 
         final JPanel top = new JPanel(new GridLayout(3, 1));
         top.add(pPlugin);
@@ -158,28 +160,60 @@ public class SoltTestPanel extends JPanel {
     }
     private Solt fallback;
 
-    private void sendEvent(String ticket, CustomerState state) {
-        final RS485Property rsp = props.get();
+    /**
+     * Последний вызванный BELL ID по окну — для кнопки "Завершить".
+     */
+    private final java.util.Map<String, String> lastBell = new java.util.HashMap<>();
+
+    /**
+     * Вызов талона по таблице solt_map.csv. Собирает тот же пакет, что Solt.getData() для STATE_INVITED,
+     * но без классов QSystem (CustomerState тянет библиотеки сервера, которых нет в тестере).
+     */
+    private void sendInvite(String ticket) {
         final String point = (String) cbPoint.getSelectedItem();
-        final Operator op = rsp == null || point == null ? null : rsp.getOperatorByPoint(point);
         final Solt solt = soltProtocol();
 
-        log("--> " + state + "  окно=" + point + "  талон=" + ticket);
+        log("--> вызов  окно=" + point + "  талон=" + ticket);
         final String[] entry = solt.findEntry(ticket, 0);
-        if (entry != null) {
-            log("    в таблице: BELL ID=" + entry[0] + (entry[1].isEmpty() ? "" : " KEY=" + entry[1]));
+        if (entry == null) {
+            log("    талона нет в " + Solt.MAP_FILE + " — ничего не отправлено");
+            return;
         }
+        final String keyCode = entry[1].isEmpty() ? solt.getKeyCode() : entry[1];
+        log("    в таблице: BELL ID=" + entry[0] + " KEY=" + keyCode);
         final byte[] bytes;
         try {
-            bytes = solt.getData(new Event(point, ticket, "", 0, state), op, rsp);
+            bytes = Solt.buildPacket(keyCode, entry[0], solt.getSendDisplay() ? ticket : null);
         } catch (Exception ex) {
             log("    ОШИБКА: " + ex.getMessage());
             return;
         }
-        if (bytes == null) {
-            log(entry == null
-                    ? "    талона нет в " + Solt.MAP_FILE + " — ничего не отправлено"
-                    : "    протокол ничего не вернул для " + state + " (отмена выключена: cancel=false)");
+        lastBell.put(point, entry[0]);
+        send(bytes);
+    }
+
+    /**
+     * Завершение: как Solt.getData() для STATE_FINISH — клавиша отмены по последнему BELL ID окна.
+     */
+    private void sendFinish() {
+        final String point = (String) cbPoint.getSelectedItem();
+        final Solt solt = soltProtocol();
+
+        log("--> завершить  окно=" + point);
+        final String bell = lastBell.remove(point);
+        if (!solt.getCancel()) {
+            log("    отмена выключена (cancel=false в XML) — ничего не отправлено");
+            return;
+        }
+        if (bell == null) {
+            log("    в этом окне не было вызова — нечего гасить");
+            return;
+        }
+        final byte[] bytes;
+        try {
+            bytes = Solt.buildPacket(solt.getCancelKeyCode(), bell, null);
+        } catch (Exception ex) {
+            log("    ОШИБКА: " + ex.getMessage());
             return;
         }
         send(bytes);
@@ -206,7 +240,7 @@ public class SoltTestPanel extends JPanel {
         log("=== Прогон " + from + " .. " + to);
         try {
             for (int n = from; n <= to && !stopRun; n++) {
-                sendEvent(String.valueOf(n), CustomerState.STATE_INVITED);
+                sendInvite(String.valueOf(n));
                 Thread.sleep(delay);
             }
         } catch (InterruptedException ex) {
@@ -226,23 +260,99 @@ public class SoltTestPanel extends JPanel {
         log(hex.toString());
         log(ascii.toString());
 
-        ISerialPort port = null;
         try {
-            port = portOpener.open();
-            port.send(bytes);
-            Thread.sleep(250);
-            log("    отправлено");
-        } catch (Exception ex) {
-            log("    ОШИБКА порта: " + ex);
-            System.err.println(ex);
-        } finally {
-            if (port != null) {
-                try {
-                    port.free();
-                } catch (Exception ex) {
-                    System.err.println(ex);
-                }
+            if (serial == null) {
+                openDirect();
             }
+            final long t1 = System.currentTimeMillis();
+            out.write(bytes);
+            // flush() НЕ вызываем: в 64-битной сборке RXTX он уходит в nativeDrain() и роняет JVM
+            // (EXCEPTION_ACCESS_VIOLATION в rxtxSerial.dll). write() и так пишет в порт сразу.
+            // ждём, пока байты физически уйдут: 10 бит на байт + запас для переходника
+            Thread.sleep(bytes.length * 10L * 1000L / Math.max(speed, 1) + 50);
+            log("    отправлено " + bytes.length + " байт за " + (System.currentTimeMillis() - t1) + " мс");
+        } catch (Throwable ex) {
+            logError("    ОШИБКА порта", ex);
+            closePort();
+        }
+    }
+
+    /**
+     * Порт открываем сами, как Sender485.DirectPort в плагине: без фонового потока RxtxSerialPort,
+     * один раз и держим открытым. Поиск порта в RXTX на Windows долгий, поэтому делаем его один раз.
+     */
+    private gnu.io.CommPortIdentifier portId;
+    private gnu.io.SerialPort serial;
+    private java.io.OutputStream out;
+    private int speed = 9600;
+
+    private void openDirect() throws Exception {
+        final long t0 = System.currentTimeMillis();
+        log("    открываю порт (только первый раз)...");
+        // берём настройки из полей формы слева
+        final ISerialPort cfg = portOpener.open();
+        final String name = cfg.getName();
+        int bits = 8;
+        int stopBits = 1;
+        int parity = 0;
+        if (cfg instanceof ru.evgenic.rxtx.serialPort.RxtxSerialPort) {
+            final ru.evgenic.rxtx.serialPort.RxtxSerialPort rp = (ru.evgenic.rxtx.serialPort.RxtxSerialPort) cfg;
+            speed = rp.getSpeed();
+            bits = rp.getDataBits();
+            stopBits = rp.getStopBits();
+            parity = rp.getParity();
+        }
+        if (portId == null || !portId.getName().equalsIgnoreCase(name)) {
+            portId = gnu.io.CommPortIdentifier.getPortIdentifier(name);
+        }
+        // через reflection: в RXTX open() возвращает CommPort, в NRJavaSerial - RXTXPort
+        final Object p = portId.getClass().getMethod("open", String.class, int.class).invoke(portId, "SOLT-test", 2000);
+        serial = (gnu.io.SerialPort) p;
+        serial.setSerialPortParams(speed, bits, stopBits, parity);
+        out = serial.getOutputStream();
+        log("    порт " + name + " открыт за " + (System.currentTimeMillis() - t0) + " мс ("
+                + speed + " " + bits + " stop=" + stopBits + " parity=" + parity + ")");
+    }
+
+    private void closePort() {
+        if (serial == null) {
+            return;
+        }
+        try {
+            out.close();
+        } catch (Throwable ex) {
+            logError("    ОШИБКА при закрытии потока", ex);
+        }
+        try {
+            serial.close();
+            log("    порт освобождён");
+        } catch (Throwable ex) {
+            logError("    ОШИБКА при освобождении порта", ex);
+        }
+        serial = null;
+        out = null;
+    }
+
+    /**
+     * Задачи для фонового потока: любая ошибка (в т.ч. Error) попадает в лог, а не теряется молча.
+     */
+    private void submit(Runnable task) {
+        worker.submit(() -> {
+            try {
+                task.run();
+            } catch (Throwable ex) {
+                logError("ОШИБКА", ex);
+            }
+        });
+    }
+
+    private void logError(String prefix, Throwable ex) {
+        log(prefix + ": " + ex);
+        ex.printStackTrace();
+        Throwable cause = ex.getCause();
+        while (cause != null) {
+            log("      причина: " + cause);
+            cause = cause.getCause();
         }
     }
 

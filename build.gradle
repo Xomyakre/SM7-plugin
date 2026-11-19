@@ -42,17 +42,12 @@ jar.doLast {
 
     File file = new File("adminRS485.bat")
     file.write("@echo off\n")
-    file.append("java -jar \"%~dp0" + archivesBaseName + '-' + version + ".jar\"\n")
+    file.append("java -Djava.library.path=\"%~dp0.\" -cp \"%~dp0" + archivesBaseName + '-' + version + ".jar;%~dp0lib\\RXTXcomm.jar\" ru.apertum.cbrs485.test.TestRS\n")
     file.append("pause\n")
     file = new File("adminRS485.sh")
     file.write("#!/bin/sh\n")
     file.append("\n")
-    file.append("java -jar " + archivesBaseName + '-' + version + ".jar\n")
-
-    file = new File("version.bat")
-    file.write("java -cp " + archivesBaseName + '-' + version + ".jar" + " ru.apertum.cbrs485.core.Version \n")
-    file.append("\n")
-    file.append("pause\n")
+    file.append("java -Djava.library.path=. -cp \"" + archivesBaseName + '-' + version + ".jar:lib/RXTXcomm.jar\" ru.apertum.cbrs485.test.TestRS\n")
 }
 
 dependencies {
