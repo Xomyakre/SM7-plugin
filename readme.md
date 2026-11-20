@@ -174,28 +174,7 @@ A03F5A;1
 
 ---
 
-## Что изменено относительно оригинала
 
-**Протокол и логика**
-- Протокол **Solt (MPRT)**: был пустой заглушкой, теперь реализован. Вызов, приём и гашение — клавишами 1/3/15.
-- Приём нажатий **пультов SOLT** с модема и выполнение команд QSystem (`QSystemCommands`, `SoltPult`).
-- **Префиксы BELL ID по окнам**: у каждого окна свой SM7.
-- Таблицы `solt_map.csv`, `solt_pults.csv`, `SM7_talony_0-100.csv`.
-
-**Работа с COM-портом**
-- Порт открывается **один раз и держится открытым**. Раньше на каждую отправку уходило 4–10 с на поиск порта.
-- Чтение и запись переведены с RXTX на **jSerialComm**. 64-битная `rxtxSerial.dll` роняла JVM (`EXCEPTION_ACCESS_VIOLATION`) на `flush()`, `available()` и `read()`: в ней обрезаются 64-битные адреса. RXTX остался только в форме настроек.
-
-**Тестер**
-- Вкладка **SOLT** заполнена (`SoltTestPanel`).
-- `adminRS485.bat` запускается с `RXTXcomm.jar` в classpath и `java.library.path`. Раньше было `NoClassDefFoundError: gnu/io/...`.
-- Тестер не зависит от классов сервера QSystem. Раньше было `NoClassDefFoundError: commons-configuration2`.
-- Ошибки порта видны в логе, а не теряются молча.
-
-**Сборка**
-- Задача `gradlew release` собирает минимальный zip для распаковки в папку QSystem.
-
----
 
 ## Частые проблемы
 
@@ -210,22 +189,7 @@ A03F5A;1
 
 ---
 
-## Сборка из исходников
 
-```
-gradlew.bat clean jar     # плагин + adminRS485.bat в корне проекта
-gradlew.bat release       # build\release\SM7-plugin-<версия>.zip
-```
-
-Нужна Java 8. При первой сборке нужен интернет: Gradle скачивает jSerialComm.
-
-### Выпуск релиза
-
-1. Поменяйте `appVersion` в `gradle.properties`.
-2. Выполните `gradlew.bat release`.
-3. GitHub → **Releases** → **Draft a new release** → тег `v<версия>` → прикрепите zip → **Publish**.
-
----
 
 ## Структура кода
 
