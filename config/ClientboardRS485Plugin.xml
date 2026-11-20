@@ -14,7 +14,7 @@
         <docash default="false">DoCash</docash>
         <ledDisplayRu default="false">led-displays.ru</ledDisplayRu>
         <qsystem default="false">QSystem</qsystem>
-        <solt keyCode="1" sendDisplay="false" cancel="false" cancelKeyCode="2" default="true">Solt</solt>
+        <solt keyCode="1" workKeyCode="3" sendDisplay="false" cancel="true" cancelKeyCode="15" default="true">Solt</solt>
         <ssi default="false">SSI</ssi>
         <svetovod default="false">Svetovod</svetovod>
         <svetovodM fontName="Arial" fontSize="12" height="9" lenghtBy8="3" default="false">Svetovod M</svetovodM>

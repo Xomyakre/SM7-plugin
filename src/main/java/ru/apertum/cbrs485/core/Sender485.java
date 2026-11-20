@@ -4,11 +4,10 @@
  */
 package ru.apertum.cbrs485.core;
 
-import gnu.io.CommPortIdentifier;
-import gnu.io.SerialPort;
+import com.fazecast.jSerialComm.SerialPort;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
-import java.io.OutputStream;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -23,8 +22,11 @@ import ru.evgenic.rxtx.serialPort.RxtxSerialPort;
 
 /**
  * Отсылка на табло. Один поток, посылки строго по очереди, порт открываем сами:
- * вызов клиента - порт открыт и занят, номер мигает; прием - номер горит;
+ * вызов клиента - порт открыт и занят, номер мигает; приём - номер горит;
  * завершение - табло гаснет и, если больше никого не обслуживают, порт закрывается.
+ *
+ * Если настроены пульты SOLT (config/solt_pults.csv), этот же порт ещё и читаем:
+ * модем SB5-MPRT отдаёт в него нажатия пультов, а они превращаются в команды QSystem.
  *
  * @author Evgeniy Egorov
  */
@@ -40,7 +42,7 @@ public class Sender485 {
     }
 
     /**
-     * Шлем в порт только из процесса сервера. Программа оператора на том же компьютере
+     * Шлём в порт только из процесса сервера. Программа оператора на том же компьютере
      * грузит этот же плагин и меняет статусы своим устаревшим копиям клиентов,
      * из-за чего на табло всплывали прошлые номера.
      * Для персонального табло у оператора запускать клиента с -Drs485.client=true
@@ -58,6 +60,7 @@ public class Sender485 {
      * Закрывать порт, когда никого не обслуживают. Открытие порта в Windows занимает несколько секунд
      * (библиотека перебирает все COM порты), поэтому по умолчанию порт держим открытым,
      * иначе каждый вызов клиента появляется на табло с задержкой. Включить: -Drs485.release=true
+     * С пультами SOLT порт не закрываем никогда - иначе не услышим нажатия.
      */
     private static final boolean RELEASE_PORT = Boolean.getBoolean("rs485.release");
 
@@ -71,6 +74,9 @@ public class Sender485 {
     final private HashMap<String, DirectPort> opened = new HashMap<>();
     final private Thread sndThread;
     final private RS485Property props;
+    /** пульты SOLT: кто к какому окну привязан */
+    final private SoltPult pults;
+    final private QSystemCommands commands;
 
     private Sender485() {
         try {
@@ -78,9 +84,12 @@ public class Sender485 {
         } catch (JAXBException | FileNotFoundException ex) {
             throw new RuntimeException(ex);
         }
-        System.out.println("Sender ready (v4, enabled=" + ENABLED + "): default port=" + props.getPortName() + " protocol=" + props.getProtocols().getDefaultPtotocol());
-        PortLog.info("START v4 enabled=" + ENABLED + " port=" + props.getPortName() + " protocol=" + props.getProtocols().getDefaultPtotocol()
-                + " cmd=" + System.getProperty("sun.java.command"));
+        pults = SoltPult.load(SoltPult.PULTS_FILE);
+        commands = new QSystemCommands(pults.getServerHost(), pults.getServerPort());
+        System.out.println("Sender ready (v5, enabled=" + ENABLED + "): default port=" + props.getPortName() + " protocol="
+                + props.getProtocols().getDefaultPtotocol() + " pults=" + !pults.isEmpty());
+        PortLog.info("START v5 enabled=" + ENABLED + " port=" + props.getPortName() + " protocol=" + props.getProtocols().getDefaultPtotocol()
+                + " pults=" + !pults.isEmpty() + " cmd=" + System.getProperty("sun.java.command"));
 
         // поток для отсыла стартуем один раз и навсегда
         sndThread = new Thread(this::loop, "ClientboardRS485Plugin-sender");
@@ -92,8 +101,12 @@ public class Sender485 {
         return ENABLED;
     }
 
+    private boolean keepPortOpen() {
+        return !RELEASE_PORT || !pults.isEmpty();
+    }
+
     private void loop() {
-        if (ENABLED && !RELEASE_PORT) {
+        if (ENABLED && keepPortOpen()) {
             warmUp();
         }
         while (!Thread.currentThread().isInterrupted()) {
@@ -125,19 +138,39 @@ public class Sender485 {
     }
 
     /**
-     * Открываем порты всех табло сразу при старте, чтобы первый вызов клиента не ждал поиска порта.
+     * Открываем порты всех табло сразу при старте, чтобы первый вызов клиента не ждал поиска порта
+     * и чтобы сразу слышать пульты.
      */
     private void warmUp() {
         for (Operator operator : props.getOperators()) {
             try {
                 final ISerialPort cfg = operator.getPort(props);
                 if (!opened.containsKey(cfg.getName())) {
-                    final DirectPort port = new DirectPort(cfg);
+                    final DirectPort port = newPort(cfg);
                     port.openIfNeeded();
                     opened.put(cfg.getName(), port);
                 }
             } catch (Throwable ex) {
                 PortLog.error("warm up failed for window " + operator.getPoint(), ex);
+            }
+        }
+    }
+
+    private DirectPort newPort(ISerialPort cfg) {
+        return new DirectPort(cfg, pults.isEmpty() ? null : this::received);
+    }
+
+    /**
+     * Байты от модема: собираем пакеты MPRT и отдаём нажатия пультов в QSystem.
+     */
+    private void received(String portName, byte[] bytes) {
+        PortLog.info("RX " + portName + " " + PortLog.hex(bytes));
+        for (byte b : bytes) {
+            final SoltPult.Press press = pults.feed(b & 0xFF);
+            if (press != null) {
+                final String what = pults.dispatch(press, commands);
+                System.out.println("SOLT PULT [" + press.raw + "]: " + what);
+                PortLog.info("PULT [" + press.raw + "] " + what);
             }
         }
     }
@@ -187,7 +220,7 @@ public class Sender485 {
 
         DirectPort port = opened.get(portName);
         if (port == null) {
-            port = new DirectPort(cfg);
+            port = newPort(cfg);
             opened.put(portName, port);
         }
 
@@ -202,7 +235,7 @@ public class Sender485 {
             port.write(bytes);
         }
 
-        if (windows.isEmpty() && RELEASE_PORT) {
+        if (windows.isEmpty() && !keepPortOpen()) {
             // никого не обслуживают - освобождаем порт до следующего вызова
             port.close();
         }
@@ -249,8 +282,18 @@ public class Sender485 {
     }
 
     /**
-     * COM порт, который открываем и закрываем сами, без фоновых потоков библиотеки.
+     * Кому отдавать принятые из порта байты.
+     */
+    interface RxListener {
+
+        void received(String portName, byte[] bytes);
+    }
+
+    /**
+     * COM порт через jSerialComm. RXTX (rxtxSerial.dll 64 бит) роняет JVM на flush/available/read,
+     * поэтому от него берём только настройки порта из XML, а пишем и читаем через jSerialComm.
      * write() возвращается, когда байты уже ушли в провод.
+     * Если задан listener, отдельный поток читает порт с таймаутом 200 мс.
      */
     private static class DirectPort {
 
@@ -259,12 +302,12 @@ public class Sender485 {
         private final int bits;
         private final int stopBits;
         private final int parity;
-        private CommPortIdentifier id;
-        private SerialPort port;
-        private OutputStream out;
+        private final RxListener listener;
+        private volatile SerialPort port;
 
-        DirectPort(ISerialPort cfg) {
+        DirectPort(ISerialPort cfg, RxListener listener) {
             this.name = cfg.getName();
+            this.listener = listener;
             if (cfg instanceof RxtxSerialPort) {
                 final RxtxSerialPort rp = (RxtxSerialPort) cfg;
                 speed = rp.getSpeed();
@@ -277,9 +320,14 @@ public class Sender485 {
                 stopBits = 1;
                 parity = 0;
             }
+            if (listener != null) {
+                final Thread reader = new Thread(this::readLoop, "ClientboardRS485Plugin-rx-" + name);
+                reader.setDaemon(true);
+                reader.start();
+            }
         }
 
-        void openIfNeeded() throws Exception {
+        synchronized void openIfNeeded() throws Exception {
             if (port == null) {
                 open();
             }
@@ -287,8 +335,10 @@ public class Sender485 {
 
         void write(byte[] bytes) throws Exception {
             openIfNeeded();
-            out.write(bytes);
-           // out.flush();    // Тестовое коментривание строки, просто хз че так, но сервер падает из неё. эщкере
+            final int written = port.writeBytes(bytes, bytes.length);
+            if (written != bytes.length) {
+                throw new Exception("written " + written + " of " + bytes.length + " bytes to " + name + ", error " + port.getLastErrorCode());
+            }
             // ждем, пока байты физически уйдут: 10 бит на байт + запас для переходника RS485
             Thread.sleep(bytes.length * 10L * 1000L / Math.max(speed, 1) + 50);
             PortLog.tx(name, bytes);
@@ -297,34 +347,62 @@ public class Sender485 {
         private void open() throws Exception {
             PortLog.info("OPEN " + name + " speed=" + speed + " bits=" + bits + " stop=" + stopBits + " parity=" + parity);
             final long start = System.currentTimeMillis();
-            if (id == null) {
-                // поиск порта долгий, делаем его один раз
-                id = CommPortIdentifier.getPortIdentifier(name);
+            final SerialPort p = SerialPort.getCommPort(name);
+            // стоп-биты: 1 -> ONE_STOP_BIT, 2 -> TWO_STOP_BITS, 3 (1.5 в RXTX) -> ONE_POINT_FIVE_STOP_BITS
+            final int jStop = stopBits == 2 ? SerialPort.TWO_STOP_BITS
+                    : stopBits == 3 ? SerialPort.ONE_POINT_FIVE_STOP_BITS
+                    : SerialPort.ONE_STOP_BIT;
+            // чётность в RXTX и jSerialComm кодируется одинаково: 0 нет, 1 odd, 2 even, 3 mark, 4 space
+            p.setComPortParameters(speed, bits, jStop, parity);
+            // readBytes() ждёт данные до 200 мс и возвращает 0, если ничего не пришло
+            p.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 200, 0);
+            if (!p.openPort()) {
+                throw new Exception("port " + name + " not opened (busy or not exists), error " + p.getLastErrorCode());
             }
-            // через reflection: в RXTX open() возвращает CommPort, в NRJavaSerial - RXTXPort
-            final Object p = id.getClass().getMethod("open", String.class, int.class).invoke(id, "QSystem-RS485", 2000);
-            port = (SerialPort) p;
-            port.setSerialPortParams(speed, bits, stopBits, parity);
-            out = port.getOutputStream();
+            port = p;
             PortLog.info("OPENED " + name + " in " + (System.currentTimeMillis() - start) + " ms");
         }
 
-        void close() {
-            if (port == null) {
+        private void readLoop() {
+            final byte[] buf = new byte[64];
+            while (true) {
+                try {
+                    final SerialPort p = port;
+                    if (p == null) {
+                        Thread.sleep(500);
+                        continue;
+                    }
+                    final int n = p.readBytes(buf, buf.length);
+                    if (n > 0) {
+                        listener.received(name, Arrays.copyOf(buf, n));
+                    } else if (n < 0) {
+                        // порт закрыли или выдернули переходник - ждем, пока его снова откроют
+                        Thread.sleep(1000);
+                    }
+                } catch (InterruptedException ex) {
+                    return;
+                } catch (Throwable ex) {
+                    PortLog.error("read " + name, ex);
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException ie) {
+                        return;
+                    }
+                }
+            }
+        }
+
+        synchronized void close() {
+            final SerialPort p = port;
+            if (p == null) {
                 return;
             }
+            port = null;
             try {
-                out.close();
-            } catch (Exception ex) {
-                PortLog.error("close stream " + name, ex);
-            }
-            try {
-                port.close();
+                p.closePort();
             } catch (Exception ex) {
                 PortLog.error("close port " + name, ex);
             }
-            port = null;
-            out = null;
             PortLog.info("CLOSED " + name);
         }
     }

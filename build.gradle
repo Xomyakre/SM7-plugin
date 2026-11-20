@@ -54,4 +54,5 @@ dependencies {
     compile fileTree(dir: 'lib', include: '**/*.jar')
     compile(group: 'org.jdesktop', name: 'appframework', version: '1.0.3')
     compile(group: 'org.netbeans.external', name: 'AbsoluteLayout', version: 'RELEASE111')
+    compile(group: 'com.fazecast', name: 'jSerialComm', version: '2.10.4')
 }

@@ -63,6 +63,18 @@ public class Solt extends RS485Property.SoltProtocol {
     }
 
     /**
+     * Обратное преобразование: код из пакета (0x14) -> номер клавиши из таблицы SM7 ("1"). null, если код неизвестен.
+     */
+    public static String keyName(int code) {
+        for (Map.Entry<String, Integer> e : KEY_CODES.entrySet()) {
+            if (e.getValue() == code) {
+                return e.getKey();
+            }
+        }
+        return null;
+    }
+
+    /**
      * Последний отправленный BELL ID по каждому окну — чтобы было что гасить при завершении.
      */
     private static final ConcurrentHashMap<String, String> LAST_BELL = new ConcurrentHashMap<>();
@@ -86,6 +98,22 @@ public class Solt extends RS485Property.SoltProtocol {
                 final String keyCode = entry.length > 1 && !entry[1].isEmpty() ? entry[1] : getKeyCode();
                 LAST_BELL.put(event.point, entry[0]);
                 packet = buildPacket(keyCode, entry[0], getSendDisplay() ? ticket : null);
+                break;
+            }
+            case STATE_WORK:
+            case STATE_WORK_SECONDARY: {
+                // начало приёма: тот же BELL ID, клавиша 3 — на SM7 номер горит жёлтым
+                String bell = LAST_BELL.get(event.point);
+                if (bell == null) {
+                    final String[] entry = findEntry(ticket, event.number);
+                    if (entry == null) {
+                        System.err.println("ClientboardRS485Plugin Solt: нет BELL ID для талона \"" + ticket + "\" в " + MAP_FILE);
+                        return null;
+                    }
+                    bell = entry[0];
+                    LAST_BELL.put(event.point, bell);
+                }
+                packet = buildPacket(getWorkKeyCode(), bell, getSendDisplay() ? ticket : null);
                 break;
             }
             case STATE_DEAD:

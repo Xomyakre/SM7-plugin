@@ -9,6 +9,7 @@ import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -20,6 +21,7 @@ import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingUtilities;
 import ru.apertum.cbrs485.core.RS485Property;
 import ru.apertum.cbrs485.core.RS485Property.Operator;
+import ru.apertum.cbrs485.core.SoltPult;
 import ru.apertum.cbrs485.core.protocols.Solt;
 import ru.evgenic.rxtx.serialPort.ISerialPort;
 
@@ -27,6 +29,7 @@ import ru.evgenic.rxtx.serialPort.ISerialPort;
  * Тест SOLT MPRT: модем SB5-MPRT -> табло SM7.
  * Вызов талона идёт тем же путём, что и в QSystem: событие -> Solt -> config/solt_map.csv -> байты -> COM порт.
  * Ручная отправка собирает пакет напрямую из BELL ID и KEY CODE, без таблицы.
+ * Пульты: читаем порт модема и показываем, что пришло с пульта; можно эмулировать QSystem прямо на SM7.
  */
 public class SoltTestPanel extends JPanel {
 
@@ -44,6 +47,12 @@ public class SoltTestPanel extends JPanel {
     private final JSpinner spFrom = new JSpinner(new SpinnerNumberModel(0, 0, 9999, 1));
     private final JSpinner spTo = new JSpinner(new SpinnerNumberModel(100, 0, 9999, 1));
     private final JSpinner spDelay = new JSpinner(new SpinnerNumberModel(2, 1, 60, 1));
+
+    private final JCheckBox chEmulate = new JCheckBox("Эмулировать QSystem на SM7", true);
+    private final JSpinner spNext = new JSpinner(new SpinnerNumberModel(1, 0, 9999, 1));
+    private final JLabel lbPults = new JLabel("пульты: -");
+    private volatile boolean listening;
+    private SoltPult pults;
 
     private final JTextArea taLog = new JTextArea(15, 60);
     private volatile boolean stopRun;
@@ -65,6 +74,8 @@ public class SoltTestPanel extends JPanel {
         final JButton btnReload = new JButton("Перечитать solt_map.csv");
         btnRefresh.addActionListener(e -> refreshPoints());
         btnInvite.addActionListener(e -> submit(() -> sendInvite(tfTicket.getText().trim())));
+        final JButton btnWork = new JButton("Начать приём");
+        btnWork.addActionListener(e -> submit(() -> sendWork(tfTicket.getText().trim())));
         btnFinish.addActionListener(e -> submit(this::sendFinish));
         btnReload.addActionListener(e -> {
             soltProtocol().reloadMap();
@@ -79,6 +90,7 @@ public class SoltTestPanel extends JPanel {
         pPlugin.add(new JLabel("Талон:"));
         pPlugin.add(tfTicket);
         pPlugin.add(btnInvite);
+        pPlugin.add(btnWork);
         pPlugin.add(btnFinish);
         pPlugin.add(btnReload);
 
@@ -120,10 +132,30 @@ public class SoltTestPanel extends JPanel {
         pRun.add(btnStop);
         pRun.add(btnClosePort);
 
-        final JPanel top = new JPanel(new GridLayout(3, 1));
+        // 4. Пульты
+        final JButton btnListen = new JButton("Слушать пульты");
+        final JButton btnUnlisten = new JButton("Перестать");
+        btnListen.addActionListener(e -> submit(this::startListen));
+        btnUnlisten.addActionListener(e -> {
+            listening = false;
+            log("=== Пульты: прослушивание остановлено");
+        });
+        chEmulate.setToolTipText("1 - следующий номер зелёным, 3 - он же жёлтым, 15 - погасить. Без QSystem, прямо на SM7");
+
+        final JPanel pPult = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        pPult.setBorder(BorderFactory.createTitledBorder("Пульты SOLT (приём с модема, таблица solt_pults.csv)"));
+        pPult.add(btnListen);
+        pPult.add(btnUnlisten);
+        pPult.add(lbPults);
+        pPult.add(chEmulate);
+        pPult.add(new JLabel("следующий номер:"));
+        pPult.add(spNext);
+
+        final JPanel top = new JPanel(new GridLayout(4, 1));
         top.add(pPlugin);
         top.add(pRaw);
         top.add(pRun);
+        top.add(pPult);
 
         taLog.setEditable(false);
         taLog.setFont(new Font("Monospaced", Font.PLAIN, 12));
@@ -189,6 +221,35 @@ public class SoltTestPanel extends JPanel {
             return;
         }
         lastBell.put(point, entry[0]);
+        send(bytes);
+    }
+
+    /**
+     * Начало приёма: как Solt.getData() для STATE_WORK — тот же BELL ID, клавиша приёма (по умолчанию 3, жёлтый).
+     */
+    private void sendWork(String ticket) {
+        final String point = (String) cbPoint.getSelectedItem();
+        final Solt solt = soltProtocol();
+
+        log("--> начать приём  окно=" + point + "  талон=" + ticket);
+        String bell = lastBell.get(point);
+        if (bell == null) {
+            final String[] entry = solt.findEntry(ticket, 0);
+            if (entry == null) {
+                log("    талона нет в " + Solt.MAP_FILE + " — ничего не отправлено");
+                return;
+            }
+            bell = entry[0];
+            lastBell.put(point, bell);
+        }
+        log("    BELL ID=" + bell + " KEY=" + solt.getWorkKeyCode());
+        final byte[] bytes;
+        try {
+            bytes = Solt.buildPacket(solt.getWorkKeyCode(), bell, solt.getSendDisplay() ? ticket : null);
+        } catch (Exception ex) {
+            log("    ОШИБКА: " + ex.getMessage());
+            return;
+        }
         send(bytes);
     }
 
@@ -265,9 +326,10 @@ public class SoltTestPanel extends JPanel {
                 openDirect();
             }
             final long t1 = System.currentTimeMillis();
-            out.write(bytes);
-            // flush() НЕ вызываем: в 64-битной сборке RXTX он уходит в nativeDrain() и роняет JVM
-            // (EXCEPTION_ACCESS_VIOLATION в rxtxSerial.dll). write() и так пишет в порт сразу.
+            final int written = serial.writeBytes(bytes, bytes.length);
+            if (written != bytes.length) {
+                throw new Exception("в порт записано " + written + " из " + bytes.length + " байт, код ошибки " + serial.getLastErrorCode());
+            }
             // ждём, пока байты физически уйдут: 10 бит на байт + запас для переходника
             Thread.sleep(bytes.length * 10L * 1000L / Math.max(speed, 1) + 50);
             log("    отправлено " + bytes.length + " байт за " + (System.currentTimeMillis() - t1) + " мс");
@@ -278,12 +340,10 @@ public class SoltTestPanel extends JPanel {
     }
 
     /**
-     * Порт открываем сами, как Sender485.DirectPort в плагине: без фонового потока RxtxSerialPort,
-     * один раз и держим открытым. Поиск порта в RXTX на Windows долгий, поэтому делаем его один раз.
+     * Порт открываем через jSerialComm, один раз, и держим открытым.
+     * RXTX (rxtxSerial.dll 64 бит) роняет JVM на flush/available/read, поэтому для работы с портом он больше не используется.
      */
-    private gnu.io.CommPortIdentifier portId;
-    private gnu.io.SerialPort serial;
-    private java.io.OutputStream out;
+    private com.fazecast.jSerialComm.SerialPort serial;
     private int speed = 9600;
 
     private void openDirect() throws Exception {
@@ -302,35 +362,157 @@ public class SoltTestPanel extends JPanel {
             stopBits = rp.getStopBits();
             parity = rp.getParity();
         }
-        if (portId == null || !portId.getName().equalsIgnoreCase(name)) {
-            portId = gnu.io.CommPortIdentifier.getPortIdentifier(name);
+        final com.fazecast.jSerialComm.SerialPort p = com.fazecast.jSerialComm.SerialPort.getCommPort(name);
+        // стоп-биты: 1 -> ONE_STOP_BIT, 2 -> TWO_STOP_BITS, 3 (1.5 в RXTX) -> ONE_POINT_FIVE_STOP_BITS
+        final int jStop = stopBits == 2 ? com.fazecast.jSerialComm.SerialPort.TWO_STOP_BITS
+                : stopBits == 3 ? com.fazecast.jSerialComm.SerialPort.ONE_POINT_FIVE_STOP_BITS
+                : com.fazecast.jSerialComm.SerialPort.ONE_STOP_BIT;
+        // чётность в RXTX и jSerialComm кодируется одинаково: 0 нет, 1 odd, 2 even, 3 mark, 4 space
+        p.setComPortParameters(speed, bits, jStop, parity);
+        // read() ждёт данные до 200 мс и возвращает 0, если ничего не пришло
+        p.setComPortTimeouts(com.fazecast.jSerialComm.SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 200, 0);
+        if (!p.openPort()) {
+            throw new Exception("Порт " + name + " не открылся (занят другой программой или не существует), код ошибки "
+                    + p.getLastErrorCode());
         }
-        // через reflection: в RXTX open() возвращает CommPort, в NRJavaSerial - RXTXPort
-        final Object p = portId.getClass().getMethod("open", String.class, int.class).invoke(portId, "SOLT-test", 2000);
-        serial = (gnu.io.SerialPort) p;
-        serial.setSerialPortParams(speed, bits, stopBits, parity);
-        out = serial.getOutputStream();
+        serial = p;
         log("    порт " + name + " открыт за " + (System.currentTimeMillis() - t0) + " мс ("
                 + speed + " " + bits + " stop=" + stopBits + " parity=" + parity + ")");
     }
 
     private void closePort() {
-        if (serial == null) {
+        final com.fazecast.jSerialComm.SerialPort p = serial;
+        if (p == null) {
             return;
         }
+        serial = null;
         try {
-            out.close();
-        } catch (Throwable ex) {
-            logError("    ОШИБКА при закрытии потока", ex);
-        }
-        try {
-            serial.close();
+            p.closePort();
             log("    порт освобождён");
         } catch (Throwable ex) {
             logError("    ОШИБКА при освобождении порта", ex);
         }
-        serial = null;
-        out = null;
+    }
+
+    /**
+     * Открыть порт (если ещё не открыт) и в отдельном потоке читать всё, что присылает модем.
+     */
+    private void startListen() {
+        if (listening) {
+            log("=== Пульты: уже слушаю");
+            return;
+        }
+        pults = SoltPult.load(SoltPult.PULTS_FILE);
+        final int n = pults.size();
+        SwingUtilities.invokeLater(() -> lbPults.setText("пульты: " + n));
+        try {
+            if (serial == null) {
+                openDirect();
+            }
+        } catch (Throwable ex) {
+            logError("    ОШИБКА порта", ex);
+            closePort();
+            return;
+        }
+        listening = true;
+        log("=== Пульты: слушаю порт. Пультов в " + SoltPult.PULTS_FILE + ": " + n
+                + (n == 0 ? " (будут видны пакеты, но действий не будет - впиши BELL ID пульта в таблицу)" : ""));
+        final Thread reader = new Thread(this::readLoop, "solt-test-rx");
+        reader.setDaemon(true);
+        reader.start();
+    }
+
+    /**
+     * Чтение с таймаутом 200 мс через jSerialComm.
+     */
+    private void readLoop() {
+        final byte[] buf = new byte[64];
+        while (listening) {
+            try {
+                final com.fazecast.jSerialComm.SerialPort p = serial;
+                if (p == null) {
+                    Thread.sleep(300);
+                    continue;
+                }
+                final int cnt = p.readBytes(buf, buf.length);
+                if (cnt < 0) {
+                    // порт закрыли или выдернули переходник
+                    Thread.sleep(500);
+                    continue;
+                }
+                if (cnt == 0) {
+                    continue;
+                }
+                final StringBuilder hex = new StringBuilder("<-- от модема: ");
+                for (int i = 0; i < cnt; i++) {
+                    hex.append(String.format("%02X ", buf[i] & 0xFF));
+                }
+                log(hex.toString());
+                for (int i = 0; i < cnt; i++) {
+                    final SoltPult.Press press = pults.feed(buf[i] & 0xFF);
+                    if (press != null) {
+                        log("    пакет [" + press.raw + "]: BELL ID=" + press.bellId + " клавиша " + press.key);
+                        log("    " + pults.dispatch(press, (bell, key, point, action) -> submit(() -> emulate(point, action))));
+                    }
+                }
+            } catch (InterruptedException ex) {
+                return;
+            } catch (Throwable ex) {
+                logError("    ОШИБКА чтения порта", ex);
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ie) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /**
+     * Без QSystem: делаем на SM7 то же, что сделал бы сервер после команды пульта.
+     */
+    private void emulate(String point, SoltPult.Action action) {
+        if (!chEmulate.isSelected()) {
+            log("    (эмуляция выключена - в QSystem было бы: окно " + point + " " + action + ")");
+            return;
+        }
+        final Solt solt = soltProtocol();
+        switch (action) {
+            case INVITE: {
+                final int num = (Integer) spNext.getValue();
+                SwingUtilities.invokeLater(() -> spNext.setValue(num + 1));
+                log("--> эмуляция: окно " + point + " вызывает номер " + num + " (зелёный)");
+                final String[] entry = solt.findEntry(String.valueOf(num), 0);
+                if (entry == null) {
+                    log("    номера " + num + " нет в " + Solt.MAP_FILE);
+                    return;
+                }
+                lastBell.put(point, entry[0]);
+                send(Solt.buildPacket(solt.getKeyCode(), entry[0], null));
+                break;
+            }
+            case START: {
+                final String bell = lastBell.get(point);
+                if (bell == null) {
+                    log("--> эмуляция: окно " + point + " начать приём - но никого не вызывали");
+                    return;
+                }
+                log("--> эмуляция: окно " + point + " начать приём (жёлтый)");
+                send(Solt.buildPacket(solt.getWorkKeyCode(), bell, null));
+                break;
+            }
+            case FINISH: {
+                final String bell = lastBell.remove(point);
+                if (bell == null) {
+                    log("--> эмуляция: окно " + point + " завершить - нечего гасить");
+                    return;
+                }
+                log("--> эмуляция: окно " + point + " завершить (погасить)");
+                send(Solt.buildPacket(solt.getCancelKeyCode(), bell, null));
+                break;
+            }
+            default:
+        }
     }
 
     /**

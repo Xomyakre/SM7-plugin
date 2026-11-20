@@ -821,6 +821,21 @@ public class RS485Property {
         public void setCancelKeyCode(String cancelKeyCode) {
             this.cancelKeyCode = cancelKeyCode;
         }
+
+        private String workKeyCode;
+
+        /**
+         * KEY CODE для начала приёма (STATE_WORK). По умолчанию 3 — на SM7 номер горит жёлтым.
+         */
+        public String getWorkKeyCode() {
+            return workKeyCode == null || workKeyCode.trim().isEmpty() ? "3" : workKeyCode;
+        }
+
+        @XmlAttribute(name = "workKeyCode", required = false)
+        public void setWorkKeyCode(String workKeyCode) {
+            this.workKeyCode = workKeyCode;
+        }
+
     }
 
 
