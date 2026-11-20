@@ -90,7 +90,7 @@ public class Solt extends RS485Property.SoltProtocol {
         switch (event.state) {
             case STATE_INVITED:
             case STATE_INVITED_SECONDARY: {
-                final String[] entry = findEntry(ticket, event.number);
+                final String[] entry = findEntry(ticket, event.number, event.point);
                 if (entry == null) {
                     System.err.println("ClientboardRS485Plugin Solt: нет BELL ID для талона \"" + ticket + "\" в " + MAP_FILE);
                     return null;
@@ -105,7 +105,7 @@ public class Solt extends RS485Property.SoltProtocol {
                 // начало приёма: тот же BELL ID, клавиша 3 — на SM7 номер горит жёлтым
                 String bell = LAST_BELL.get(event.point);
                 if (bell == null) {
-                    final String[] entry = findEntry(ticket, event.number);
+                    final String[] entry = findEntry(ticket, event.number, event.point);
                     if (entry == null) {
                         System.err.println("ClientboardRS485Plugin Solt: нет BELL ID для талона \"" + ticket + "\" в " + MAP_FILE);
                         return null;
@@ -166,7 +166,33 @@ public class Solt extends RS485Property.SoltProtocol {
      * Ищем по талону целиком (A015), потом по номеру из события, потом по цифрам талона (A015 -> 15).
      */
     public String[] findEntry(String ticket, int number) {
+        return findEntry(ticket, number, null);
+    }
+
+    /**
+     * То же, но с учётом окна: если для окна задан префикс (строка window;1;AA в solt_map.csv),
+     * BELL ID собирается как префикс + номер из 4 цифр (окно 1, талон A015 -> AA0015).
+     * Так у каждого окна свой набор BELL ID, и номер видит только SM7 этого окна.
+     */
+    public String[] findEntry(String ticket, int number, String point) {
         final Map<String, String[]> map = getTicketMap();
+        if (point != null) {
+            final String[] prefix = map.get(WINDOW_KEY + point.trim().toUpperCase());
+            if (prefix != null) {
+                int n = number;
+                if (n <= 0) {
+                    final String digits = ticket.replaceAll("\\D", "");
+                    if (digits.isEmpty()) {
+                        return null;
+                    }
+                    n = Integer.parseInt(digits);
+                }
+                if (n > 9999) {
+                    return null;
+                }
+                return new String[]{prefix[0] + String.format("%04d", n), prefix[1]};
+            }
+        }
         String[] entry = map.get(ticket.toUpperCase());
         if (entry == null && number > 0) {
             entry = map.get(String.valueOf(number));
@@ -179,6 +205,11 @@ public class Solt extends RS485Property.SoltProtocol {
         }
         return entry;
     }
+
+    /**
+     * Ключ в карте для префикса окна, чтобы не пересекаться с номерами талонов.
+     */
+    private static final String WINDOW_KEY = "WINDOW:";
 
     /**
      * Перечитать config/solt_map.csv (для тестовой формы, после правки таблицы).
@@ -209,6 +240,16 @@ public class Solt extends RS485Property.SoltProtocol {
                 }
                 final String[] cols = line.split("[;,]");
                 if (cols.length < 2) {
+                    continue;
+                }
+                if ("window".equalsIgnoreCase(cols[0].trim())) {
+                    // window;окно;префикс[;keycode] - BELL ID окна = префикс (2 hex) + номер из 4 цифр
+                    final String prefix = cols.length > 2 ? cols[2].trim().toUpperCase() : "";
+                    if (!prefix.matches("[0-9A-F]{2}")) {
+                        System.err.println("ClientboardRS485Plugin Solt: префикс окна должен быть 2 hex-символа: " + line);
+                        continue;
+                    }
+                    map.put(WINDOW_KEY + cols[1].trim().toUpperCase(), new String[]{prefix, cols.length > 3 ? cols[3].trim() : ""});
                     continue;
                 }
                 final String key = cols[0].trim().toUpperCase();

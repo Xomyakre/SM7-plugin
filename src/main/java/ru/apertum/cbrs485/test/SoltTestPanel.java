@@ -206,7 +206,7 @@ public class SoltTestPanel extends JPanel {
         final Solt solt = soltProtocol();
 
         log("--> вызов  окно=" + point + "  талон=" + ticket);
-        final String[] entry = solt.findEntry(ticket, 0);
+        final String[] entry = solt.findEntry(ticket, 0, point);
         if (entry == null) {
             log("    талона нет в " + Solt.MAP_FILE + " — ничего не отправлено");
             return;
@@ -234,7 +234,7 @@ public class SoltTestPanel extends JPanel {
         log("--> начать приём  окно=" + point + "  талон=" + ticket);
         String bell = lastBell.get(point);
         if (bell == null) {
-            final String[] entry = solt.findEntry(ticket, 0);
+            final String[] entry = solt.findEntry(ticket, 0, point);
             if (entry == null) {
                 log("    талона нет в " + Solt.MAP_FILE + " — ничего не отправлено");
                 return;
@@ -482,7 +482,7 @@ public class SoltTestPanel extends JPanel {
                 final int num = (Integer) spNext.getValue();
                 SwingUtilities.invokeLater(() -> spNext.setValue(num + 1));
                 log("--> эмуляция: окно " + point + " вызывает номер " + num + " (зелёный)");
-                final String[] entry = solt.findEntry(String.valueOf(num), 0);
+                final String[] entry = solt.findEntry(String.valueOf(num), 0, point);
                 if (entry == null) {
                     log("    номера " + num + " нет в " + Solt.MAP_FILE);
                     return;
