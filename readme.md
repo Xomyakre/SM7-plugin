@@ -1,49 +1,243 @@
-# QSystem RS485 Plugin
+# SM7-plugin — QSystem + SOLT SM7 / SB5-MPRT
 
-A plugin for [QSystem](https://github.com/malashta/apertum-qsystem.rs485-plugin) that extends the original functionality by adding support for an additional RS485 communication protocol.
+Плагин RS485 для электронной очереди [QSystem](https://github.com/malashta/apertum-qsystem.rs485-plugin). Выводит номера талонов на беспроводные табло **SOLT SM7** через радиомодем **SB5-MPRT** и принимает команды с **пультов вызова SOLT**.
 
-## Overview
+Основан на [QSystem-plugin-RS485](https://github.com/Xomyakre/QSystem-plugin-RS485). Добавлен протокол **Solt**.
 
-This project extends the existing QSystem plugin to support a new protocol for communicating with compatible hardware.
+---
 
-The goal is to provide compatibility with devices that use a communication protocol not supported by the original implementation.
+## Как это работает
 
-## Installation
+```
+ Пульт SOLT ──радио──▶ SB5-MPRT ──COM──▶ Сервер QSystem + плагин
+  (1 / 3 / 15)                              │
+                                            │ вызов / приём / завершение
+                                            ▼
+ SM7 окна ◀──радио── SB5-MPRT ◀──COM── пакет MPRT (BELL ID + клавиша)
+```
 
-Follow the steps below to install and configure the plugin.
+1. Оператор вызывает клиента кнопкой в QSystem или на пульте.
+2. QSystem меняет статус клиента, и плагин отправляет в модем пакет: **BELL ID талона** и **клавишу**.
+3. Модем передаёт его по радио. SM7 показывает текст, записанный в его памяти под этой парой.
 
-### Prerequisites
+SM7 сам ничего не «знает»: в нём заранее записана таблица `BELL ID + клавиша → текст и цвет`. Плагин только выбирает нужную строку.
 
-- A working QSystem installation
-- [Java Runtime Environment](https://www.java.com/) compatible with your QSystem version
-- The required hardware and connection interface
+### Состояния на табло
 
-### Steps
+| Событие в QSystem | Клавиша | SM7 |
+|---|:---:|---|
+| Клиент вызван | `1` | номер горит **зелёным** |
+| Начат приём | `3` | номер горит **жёлтым** |
+| Завершён / не явился / отложен / переадресован | `15` | номер гаснет |
 
-### 1. Download the Plugin
+### Пульт вызова
 
-Download the following files required for installation:
+У пульта один BELL ID и три клавиши. Модем принимает нажатие и отдаёт его плагину, а плагин выполняет команду в QSystem от имени оператора окна:
 
-**Main plugin**
-- `Clientboardrs485plugin-10.2.jar` — the compiled plugin containing the project implementation.
+| Клавиша пульта | Команда QSystem |
+|:---:|---|
+| `1` | вызвать следующего клиента |
+| `3` | начать приём |
+| `15` | завершить приём (если приём не начат — «не явился») |
 
-**Required libraries and scripts**
-- `rxtxParallel.dll`
-- `rxtxSerial.dll`
-- `adminRS485.bat` — for Windows
-- `adminRS485.sh` — for Linux
+Номер на табло — это реальный талон, который выдал QSystem. Повторы одного нажатия в пределах 2 с игнорируются.
 
-**Configuration**
-- `config/ClientboardRS485Plugin.xml`
+### Несколько окон и табло
 
-### 2. Install the Plugin
+Все SM7 слышат одно радио, но каждый показывает только ID из своей таблицы. Поэтому у каждого окна свой **префикс BELL ID**:
 
-Copy the downloaded files into the appropriate QSystem directories, replacing the existing files where required.
+| Окно | Префикс | Талон A015 → BELL ID | Таблица записана в |
+|:---:|:---:|:---:|---|
+| 1 | `AA` | `AA0015` | SM7 окна 1 |
+| 2 | `AB` | `AB0015` | SM7 окна 2 |
 
-Make sure that the plugin JAR, required libraries, startup script, and configuration file are placed in their correct locations.
+---
 
+## Протокол MPRT
 
-## Compatibility
+Скорость **9600**, 8 бит, 1 стоп-бит, без чётности. Пакет передаётся ASCII-текстом:
 
-### Java 1.8 and later
+```
+STX  keycode  ' '  bellid  ETX
+02   31 34    20   41 41 30 30 31 35   03
+     "14"          "AA0015"
+```
 
+| Клавиша | Код | | Клавиша | Код |
+|:---:|:---:|---|:---:|:---:|
+| 1 | `14` | | 3 | `28` |
+| 2 | `24` | | 15 | `E4` |
+
+Полная таблица кодов: `Solt.KEY_CODES`. Модем отдаёт нажатия пультов в COM-порт в этом же формате.
+
+---
+
+## Установка
+
+1. Скачайте `SM7-plugin-<версия>.zip` из [Releases](../../releases).
+2. Остановите сервер QSystem и распакуйте архив **в папку QSystem**.
+   > При обновлении не перезаписывайте `config\`: там ваши настройки.
+3. Запустите `adminRS485.bat` и на вкладке «Главные» укажите порт модема: `COM3`, `9600`, `8`, `1`, без чётности. Протокол — **Solt**.
+4. Проверьте связь на вкладке **SOLT** и закройте тестер: пока он открыт, порт занят.
+5. Запустите сервер QSystem. В консоли должна появиться строка:
+   ```
+   Sender ready (v5, enabled=true ... pults=true)
+   ```
+
+Требования: Java 8 (64 бит), QSystem, модем SB5-MPRT на COM-порту **сервера**.
+
+### Содержимое архива
+
+```
+plugins\Clientboardrs485plugin-<версия>.jar   плагин (jSerialComm внутри)
+config\ClientboardRS485Plugin.xml             порт, протокол, окна
+config\solt_map.csv                           окно/талон → BELL ID
+config\solt_pults.csv                         пульты → окна
+lib\RXTXcomm.jar, rxtx*.dll                   для тестера
+adminRS485.bat / .sh                          тестер и настройки
+sm7\SM7_talony_0-100.csv                      таблица для записи в SM7
+```
+
+---
+
+## Настройка
+
+### `config/ClientboardRS485Plugin.xml`
+
+```xml
+<solt keyCode="1" workKeyCode="3" cancel="true" cancelKeyCode="15"
+      sendDisplay="false" default="true">Solt</solt>
+
+<operator addressRS="1" comPort="COM3" point="1" protocol="5"/>
+```
+
+| Атрибут | Назначение |
+|---|---|
+| `keyCode` | клавиша вызова (зелёный) |
+| `workKeyCode` | клавиша начала приёма (жёлтый) |
+| `cancel` / `cancelKeyCode` | гасить табло при завершении и какой клавишей |
+| `sendDisplay` | слать текст в пакете; SM7 работает с `false` |
+| `protocol="5"` | номер протокола Solt |
+
+### `config/solt_map.csv`: окна → BELL ID
+
+```
+window;1;AA
+window;2;AB
+```
+
+`BELL ID = префикс + номер из 4 цифр`. Номер окна должен совпадать с окном оператора в QSystem. Для окон без строки `window` используется общая таблица `номер;BELL ID;клавиша`.
+
+### `config/solt_pults.csv`: пульты → окна
+
+```
+server;127.0.0.1;3128
+repeat;2000
+A03F5A;1
+```
+
+| Строка | Назначение |
+|---|---|
+| `BELLID;окно` | пульт управляет этим окном (или `BELLID;id=3` — по id оператора) |
+| `server;адрес;порт` | сервер QSystem |
+| `repeat;мс` | окно, в котором повторное нажатие игнорируется |
+| `key;клавиша;INVITE\|START\|FINISH` | переназначить клавишу |
+
+> BELL ID пульта **не записывайте в SM7** (или ставьте `RECEIVE = X`). Иначе табло поймает пульт напрямую, мимо QSystem.
+
+### Таблица для SM7
+
+`sm7/SM7_talony_0-100.csv`: номера 0–100, по три строки на номер:
+
+| NUMBER | BELL CHIP ID | KEY CODE | DISPLAY | RECEIVE | COLOR |
+|---|---|:---:|:---:|:---:|---|
+| 0046 | AA0015 | 1 | 15 | O | GREEN |
+| 0047 | AA0015 | 3 | 15 | O | YELLOW |
+| 0048 | AA0015 | 15 | | O | RED |
+
+Таблица сделана для окна 1 (префикс `AA`). Для окна 2 откройте копию в Excel, сделайте `Ctrl+H` `AA → AB` и запишите её в SM7 окна 2. Записывается таблица программой настройки SOLT.
+
+---
+
+## Тестер: вкладка SOLT
+
+Запуск: `adminRS485.bat`.
+
+| Блок | Что делает |
+|---|---|
+| **Как в QSystem** | окно и талон → «Вызвать» / «Начать приём» / «Завершить». BELL ID берётся из таблицы, как в сервере |
+| **Вручную** | любой BELL ID и клавиша, без таблиц. Удобно для проверки SM7 |
+| **Прогон номеров** | отправляет номера подряд с паузой, проверяет всю таблицу SM7 |
+| **Пульты SOLT** | показывает, что пришло с модема. С галочкой «Эмулировать» — 1/3/15 прямо на SM7, без QSystem |
+
+В логе видно каждый пакет в HEX и ASCII, время открытия порта и время отправки.
+
+---
+
+## Что изменено относительно оригинала
+
+**Протокол и логика**
+- Протокол **Solt (MPRT)**: был пустой заглушкой, теперь реализован. Вызов, приём и гашение — клавишами 1/3/15.
+- Приём нажатий **пультов SOLT** с модема и выполнение команд QSystem (`QSystemCommands`, `SoltPult`).
+- **Префиксы BELL ID по окнам**: у каждого окна свой SM7.
+- Таблицы `solt_map.csv`, `solt_pults.csv`, `SM7_talony_0-100.csv`.
+
+**Работа с COM-портом**
+- Порт открывается **один раз и держится открытым**. Раньше на каждую отправку уходило 4–10 с на поиск порта.
+- Чтение и запись переведены с RXTX на **jSerialComm**. 64-битная `rxtxSerial.dll` роняла JVM (`EXCEPTION_ACCESS_VIOLATION`) на `flush()`, `available()` и `read()`: в ней обрезаются 64-битные адреса. RXTX остался только в форме настроек.
+
+**Тестер**
+- Вкладка **SOLT** заполнена (`SoltTestPanel`).
+- `adminRS485.bat` запускается с `RXTXcomm.jar` в classpath и `java.library.path`. Раньше было `NoClassDefFoundError: gnu/io/...`.
+- Тестер не зависит от классов сервера QSystem. Раньше было `NoClassDefFoundError: commons-configuration2`.
+- Ошибки порта видны в логе, а не теряются молча.
+
+**Сборка**
+- Задача `gradlew release` собирает минимальный zip для распаковки в папку QSystem.
+
+---
+
+## Частые проблемы
+
+| Симптом | Причина / решение |
+|---|---|
+| `Error 0x5 ... Port COM3 could not be opened` | порт занят: закройте COM-Port tester, второй тестер или QSystem |
+| `EXCEPTION_ACCESS_VIOLATION` в `rxtxSerial.dll` | старая сборка плагина на RXTX — обновите до версии с jSerialComm |
+| Пакет ушёл, SM7 молчит | этого BELL ID и клавиши нет в таблице SM7, или стоит `RECEIVE = X` |
+| Пульт нажат, в логе пусто | пульт не зарегистрирован в модеме или не указан в `solt_pults.csv` |
+| `оператор с таким номером окна не найден` | номер окна в `solt_pults.csv` не совпадает с окном оператора в QSystem |
+| Вкладка SOLT пустая | запущен старый jar: соберите `gradlew clean jar` и проверьте дату файла |
+
+---
+
+## Сборка из исходников
+
+```
+gradlew.bat clean jar     # плагин + adminRS485.bat в корне проекта
+gradlew.bat release       # build\release\SM7-plugin-<версия>.zip
+```
+
+Нужна Java 8. При первой сборке нужен интернет: Gradle скачивает jSerialComm.
+
+### Выпуск релиза
+
+1. Поменяйте `appVersion` в `gradle.properties`.
+2. Выполните `gradlew.bat release`.
+3. GitHub → **Releases** → **Draft a new release** → тег `v<версия>` → прикрепите zip → **Publish**.
+
+---
+
+## Структура кода
+
+```
+src/main/java/ru/apertum/cbrs485/
+├── core/
+│   ├── Sender485.java          очередь событий, COM-порт (jSerialComm), приём от модема
+│   ├── SoltPult.java           разбор пакетов модема, пульты → окна, защита от повторов
+│   ├── QSystemCommands.java    команды серверу QSystem от пульта
+│   ├── RS485Property.java      настройки XML (SoltProtocol: keyCode, workKeyCode…)
+│   └── protocols/Solt.java     сборка пакетов MPRT, таблица талонов, префиксы окон
+└── test/
+    ├── TestRS.java             окно тестера
+    └── SoltTestPanel.java      вкладка SOLT
+```
