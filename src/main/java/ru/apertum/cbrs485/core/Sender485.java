@@ -288,7 +288,7 @@ public class Sender485 {
         void write(byte[] bytes) throws Exception {
             openIfNeeded();
             out.write(bytes);
-            out.flush();
+           // out.flush();    // Тестовое коментривание строки, просто хз че так, но сервер падает из неё. эщкере
             // ждем, пока байты физически уйдут: 10 бит на байт + запас для переходника RS485
             Thread.sleep(bytes.length * 10L * 1000L / Math.max(speed, 1) + 50);
             PortLog.tx(name, bytes);
