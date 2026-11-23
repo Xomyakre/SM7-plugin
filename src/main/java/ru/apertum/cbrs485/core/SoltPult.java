@@ -62,6 +62,8 @@ public class SoltPult {
     private long repeatMs = 2000;
     private String serverHost = "127.0.0.1";
     private int serverPort = 3128;
+    /** пульт работает, только если оператор его окна вошёл в программу */
+    private boolean onlyLogged = true;
 
     public SoltPult() {
         keyToAction.put("1", Action.INVITE);
@@ -109,6 +111,9 @@ public class SoltPult {
                         case "repeat":
                             p.repeatMs = Long.parseLong(c[1]);
                             break;
+                        case "onlylogged":
+                            p.onlyLogged = !"false".equalsIgnoreCase(c[1]) && !"0".equals(c[1]);
+                            break;
                         default:
                             if (c.length >= 2) {
                                 p.pultToPoint.put(c[0].toUpperCase(), c[1]);
@@ -139,6 +144,10 @@ public class SoltPult {
 
     public int getServerPort() {
         return serverPort;
+    }
+
+    public boolean isOnlyLogged() {
+        return onlyLogged;
     }
 
     public String getPoint(String bellId) {

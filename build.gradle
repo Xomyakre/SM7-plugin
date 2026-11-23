@@ -56,3 +56,39 @@ dependencies {
     compile(group: 'org.netbeans.external', name: 'AbsoluteLayout', version: 'RELEASE111')
     compile(group: 'com.fazecast', name: 'jSerialComm', version: '2.10.4')
 }
+
+// Минимальный пакет для установки: распаковать в папку QSystem.
+// Сборка: gradlew.bat release  ->  build\release\SM7-plugin-<версия>.zip
+task release(type: Zip, dependsOn: jar) {
+    group = 'distribution'
+    description = 'Архив для распаковки в папку QSystem'
+    archiveName = "SM7-plugin-${version}.zip"
+    destinationDir = file("${buildDir}/release")
+
+    into('plugins') {
+        from jar
+    }
+    into('config') {
+        from('config') {
+            include 'ClientboardRS485Plugin.xml', 'solt_map.csv', 'solt_pults.csv'
+        }
+    }
+    into('lib') {
+        from('lib') {
+            include 'RXTXcomm.jar'
+        }
+    }
+    into('sm7') {
+        from('config') {
+            include 'SM7_*.csv'
+        }
+    }
+    from('.') {
+        include 'rxtxSerial.dll', 'rxtxParallel.dll'
+    }
+    // скрипты и README с подставленной версией
+    from('release') {
+        include 'adminRS485.bat', 'adminRS485.sh', 'README.txt'
+        filter(org.apache.tools.ant.filters.ReplaceTokens, tokens: [VERSION: version.toString()])
+    }
+}

@@ -85,7 +85,7 @@ public class Sender485 {
             throw new RuntimeException(ex);
         }
         pults = SoltPult.load(SoltPult.PULTS_FILE);
-        commands = new QSystemCommands(pults.getServerHost(), pults.getServerPort());
+        commands = new QSystemCommands(pults.getServerHost(), pults.getServerPort(), pults.isOnlyLogged());
         System.out.println("Sender ready (v5, enabled=" + ENABLED + "): default port=" + props.getPortName() + " protocol="
                 + props.getProtocols().getDefaultPtotocol() + " pults=" + !pults.isEmpty());
         PortLog.info("START v5 enabled=" + ENABLED + " port=" + props.getPortName() + " protocol=" + props.getProtocols().getDefaultPtotocol()
